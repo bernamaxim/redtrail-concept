@@ -1,0 +1,7 @@
+services:
+  redtrail:
+    build: .
+    container_name: redtrail-concept
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:80"   # hanya bisa diakses lewat reverse proxy di server
