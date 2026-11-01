@@ -77,6 +77,7 @@ th{font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color
 .tw{overflow-x:auto}
 a{color:var(--track)}
 .note{font-size:12px;color:var(--muted)}
+.facts{display:flex;flex-direction:column;gap:6px;max-width:110ch}.facts p{margin:0}.facts b{color:var(--fg)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
@@ -110,8 +111,10 @@ a{color:var(--track)}
         <button data-layer="slope" aria-pressed="true">Slope &gt;25°</button>
         <button data-layer="trail" aria-pressed="true">Trails</button>
         <button data-layer="acc" aria-pressed="true">Nav uncertainty</button>
-        <button data-layer="cov" aria-pressed="true">Beacon coverage</button>
+        <button data-layer="cov" aria-pressed="true">Radio coverage</button>
         <button id="b-dust" aria-pressed="false">Dust storm</button>
+        <button id="b-relay" aria-pressed="false">Relay orbiter</button>
+        <button id="b-drop">Place beacon</button>
         <button id="b-poi" aria-pressed="false">+ Science target</button>
       </div>
       <canvas id="map" width="960" height="640" aria-label="Map of western Jezero Crater with live crew positions"></canvas>
@@ -127,7 +130,11 @@ a{color:var(--track)}
     </aside>
   </section>
 
-  <p class="note">Medan masih model sederhana; letak delta, Séítah, depot Three Forks, dan beacon adalah perkiraan. Jangkauan beacon dihitung dari garis pandang di atas medan dan kelengkungan Mars (radius 3.389,5 km), dengan toleransi difraksi 4 m. Area gelap pada layer Beacon coverage adalah tempat suit melihat kurang dari 3 beacon.</p>
+  <div class="note facts">
+    <p><b>Fakta yang dipakai:</b> Mars tidak punya GPS dan tidak punya medan magnet global untuk kompas. Radius Mars 3.389,5 km, jadi cakrawala lebih dekat daripada di Bumi. Jeda sinyal ke Bumi dihitung dari posisi Mars dan Bumi hari ini. Rover Apollo bernavigasi tanpa beacon: giroskop arah, odometer roda, dan bayangan matahari. Arsitektur referensi NASA (DRA 5.0) mengirim habitat dan listrik sebelum kru, dan memilih satelit relay areostasioner untuk komunikasi permukaan; satelit itu belum ada saat ini. NASA sudah menguji radio beacon navigasi kecil (Lunar Node-1) di Bulan.</p>
+    <p><b>Asumsi model:</b> medan adalah model sederhana, bukan data HiRISE; letak delta, Séítah, dan depot Three Forks perkiraan. Tiap astronot membawa 3 beacon portabel dan rover 2, berjangkauan 5 km. Lokasi pemasangan direncanakan sebelum EVA dari data medan (analisis garis pandang), lalu dipasang saat kru melewatinya; tombol Place beacon memasang di posisi unit yang dipilih. Garis pandang radio memperhitungkan medan dan kelengkungan Mars, dengan toleransi difraksi 4 m. Error dead reckoning 2% dari jarak (6% tanpa arah matahari), rover 1%. Batas lereng 25°. Suit 8 jam O₂.</p>
+    <p><b>Layer Radio coverage:</b> gelap = tidak ada beacon tetap yang terlihat; hijau kebiruan = 3 beacon atau lebih (posisi bisa dikunci). Rover tidak dihitung karena bergerak.</p>
+  </div>
 
 </div>
 
@@ -214,13 +221,10 @@ const R_MARS=3389.5;          // km, Mars mean radius (horizon is closer than on
 const DIFFRACT=0.004;         // km, small obstacles a UHF signal can still bend over
 const ANT_SUIT=0.002, ANT_ROVER=0.003, ROVER_RANGE=4, MESH_RANGE=8;
 const EVA_START_LMST=8;       // EVA planned to start at 08:00 local solar time
-const BEACONS=[
-  {id:"HAB",name:"Habitat mast",x:13,y:9,h:0.015,range:8},
-  {id:"B2",name:"Delta rim",x:10,y:6.9,h:0.005,range:6},
-  {id:"B3",name:"Séítah south",x:13.2,y:12.3,h:0.005,range:6},
-  {id:"B4",name:"East plains",x:16.8,y:8.5,h:0.005,range:6},
-  {id:"B5",name:"Séítah north",x:10.75,y:10.05,h:0.005,range:6},
-];
+// First Marswalk: the only fixed radio source is the habitat mast. Each astronaut carries
+// portable beacons and places them during the walk, so the network grows as the crew explores.
+const BEACON_RANGE=5, ANT_BEACON=0.003, BEACONS_PER_CREW=3, BEACONS_ROVER=2;
+let BEACONS=[];
 // line of sight over terrain, including Mars curvature
 function los(ax,ay,ah,bx,by,bh){
   const za=elev(ax,ay)+ah, zb=elev(bx,by)+bh, dd=Math.hypot(bx-ax,by-ay);
@@ -230,12 +234,12 @@ function los(ax,ay,ah,bx,by,bh){
     if(elev(ax+(bx-ax)*t,ay+(by-ay)*t)+d1*d2/(2*R_MARS)-DIFFRACT>za+(zb-za)*t)return false}
   return true}
 // beacon mesh: which beacons can pass data back to the habitat, and through which hops
-(function mesh(){
+function mesh(){
   BEACONS.forEach(b=>b.route=null);BEACONS[0].route=[];  // route = beacon hops back to the habitat
   const q=[BEACONS[0]];
   while(q.length){const c=q.shift();
     for(const b of BEACONS)if(!b.route&&Math.hypot(b.x-c.x,b.y-c.y)<MESH_RANGE&&los(b.x,b.y,b.h,c.x,c.y,c.h)){b.route=[b.id,...c.route];q.push(b)}}
-})();
+}
 const DUNES=[[10.2,11.6],[11.6,11.1],[12.7,11.8],[12.6,13.2],[11.4,13.8],[10.1,13.1]];
 const BASEPOI=[
   {name:"Delta front carbonates",x:8.3,y:6.4,r:0.35},
@@ -246,17 +250,24 @@ const UDEF=[
   {id:"B",name:"ARES-2",role:"EVA crew · astrobiologist",col:"#e8a33a",speed:2.2,o2h:8,ant:ANT_SUIT,path:[[13,9],[12.4,10.4],[11.3,12.2],[12.9,13.2],[14.7,11.2],[13,9]]},
   {id:"R",name:"Pathfinder",role:"support rover · mobile beacon",col:"#c96bd6",speed:4.2,o2h:null,ant:ANT_ROVER,path:[[13,9],[15.6,8.1],[18.1,7.3],[19.2,9.6],[16.4,10.8],[13,9]]},
 ];
-let units,simT,pois,running=true,speed=60,dust=false,layers={slope:true,trail:true,acc:true,cov:true},poiMode=false,sel="A";
+let units,simT,pois,running=true,speed=60,dust=false,relay=false,layers={slope:true,trail:true,acc:true,cov:true},poiMode=false,sel="A";
 function inPoly(x,y,poly){let c=false;for(let i=0,j=poly.length-1;i<poly.length;j=i++){const[xi,yi]=poly[i],[xj,yj]=poly[j];if(((yi>y)!=(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi)+xi))c=!c}return c}
 const localHour=()=>(EVA_START_LMST+simT/3600/1.0275)%24;
 const sunHeading=()=>!dust&&localHour()>6.5&&localHour()<17.5;
 function snapshot(u){return{x:u.x,y:u.y,o2:u.o2,batt:u.batt,err:u.err,odo:u.odo,fix:u.nav.length,docked:u.docked,t:simT}}
 function reset(){
   simT=0;pois=BASEPOI.map(p=>({...p}));
-  units=UDEF.map(u=>({...u,seg:0,x:u.path[0][0],y:u.path[0][1],trail:[[u.path[0][0],u.path[0][1]]],shown:1,o2:1,batt:1,err:5,
-    nav:BEACONS.map(b=>b.id),navOK:true,navPend:null,link:"DIRECT",queue:[],flags:{},docked:false,odo:0}));
-  units.forEach(u=>u.rep=snapshot(u));
   $("#log").innerHTML='<li class="empty" style="border:0;padding:0;display:block">No events yet. Crew is leaving the habitat.</li>';
+  BEACONS=[{id:"HAB",name:"Habitat mast",x:HAB.x,y:HAB.y,h:0.015,range:8}];mesh();
+  covGen++;addCoverage(BEACONS[0]);
+  units=UDEF.map(u=>({...u,seg:0,x:u.path[0][0],y:u.path[0][1],trail:[[u.path[0][0],u.path[0][1]]],shown:1,o2:1,batt:1,err:5,
+    nav:["HAB","R"],navOK:false,beacons:u.o2h!=null?BEACONS_PER_CREW:BEACONS_ROVER,plan:[],navPend:null,link:"DIRECT",queue:[],flags:{},docked:false,odo:0}));
+  units.forEach(u=>u.rep=snapshot(u));
+  planBeacons();
+  for(const u of units){
+    const n=u.plan.length;
+    habAlert(u,u.gapKm>0.2?"warn":"info",`EVA plan: ${n} beacon site${n===1?"":"s"} chosen from terrain${u.gapKm>0.2?` · about ${u.gapKm.toFixed(1)} km of route still without a link to the habitat`:" · link covers the whole route"}`);
+  }
 }
 const fmtT=s=>{const h=Math.floor(s/3600),m=Math.floor(s%3600/60);return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`};
 const fmtMS=s=>`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`;
@@ -295,8 +306,46 @@ function linkPath(u){
     .sort((a,b)=>a.route.length-b.route.length);
   if(vis.length)return vis[0].id==="HAB"?"DIRECT":"VIA "+vis[0].route.join(" → ");
   if(u.o2h!=null){const r=units.find(v=>v.id==="R");
-    if(r.link&&Math.hypot(r.x-u.x,r.y-u.y)<ROVER_RANGE&&los(u.x,u.y,u.ant,r.x,r.y,ANT_ROVER))return "VIA ROVER";}
+    if(r.link&&r.link!=="VIA RELAY ORBITER"&&Math.hypot(r.x-u.x,r.y-u.y)<ROVER_RANGE&&los(u.x,u.y,u.ant,r.x,r.y,ANT_ROVER))return "VIA ROVER";}
+  if(relay)return "VIA RELAY ORBITER";
   return null}
+function deployBeacon(u,planned){
+  if(u.beacons<=0||u.docked)return false;
+  const total=u.o2h!=null?BEACONS_PER_CREW:BEACONS_ROVER;
+  const b={id:`${u.id}${total-u.beacons+1}`,name:`placed by ${u.name}`,x:u.x,y:u.y,h:ANT_BEACON,range:BEACON_RANGE};
+  BEACONS.push(b);u.beacons--;mesh();addCoverage(b);
+  suitAlert(u,"info",`placed beacon ${b.id}${planned?" at planned site":""} · ${u.beacons} left`);
+  return true}
+
+/* EVA planning, done in the habitat before the walk from the terrain model:
+   walk each planned route in 50 m steps; where the link back to the habitat would break,
+   look back up to 1 km for the spot whose beacon keeps the longest stretch ahead connected. */
+function planBeacons(){
+  // each unit plans against the habitat and its own beacons only, so no plan depends on another team's timing
+  for(const u of units){
+    const net=[{x:HAB.x,y:HAB.y,h:0.015,range:8}];
+    const seen=(px,py,ant)=>net.some(b=>Math.hypot(b.x-px,b.y-py)<b.range&&los(px,py,ant,b.x,b.y,b.h));
+    const pts=[];let s=0;
+    for(let i=0;i<u.path.length-1;i++){const[ax,ay]=u.path[i],[bx,by]=u.path[i+1],d=Math.hypot(bx-ax,by-ay),n=Math.max(1,Math.ceil(d/0.05));
+      for(let k=0;k<n;k++){pts.push({x:ax+(bx-ax)*k/n,y:ay+(by-ay)*k/n,s:s+d*k/n})}s+=d}
+    const ok=pts.map(p=>seen(p.x,p.y,u.ant));
+    let left=u.beacons;
+    for(let i=1;i<pts.length&&left>0;i++){
+      if(ok[i])continue;
+      let best=null,bestRun=0;
+      for(let j=i-1;j>=0&&pts[i].s-pts[j].s<=1.5&&ok[j];j--){
+        const c=pts[j];let run=0;
+        for(let k=i;k<pts.length&&run<400;k++){
+          if(ok[k]||(Math.hypot(c.x-pts[k].x,c.y-pts[k].y)<BEACON_RANGE&&los(pts[k].x,pts[k].y,u.ant,c.x,c.y,ANT_BEACON)))run++;else break}
+        if(run>bestRun){bestRun=run;best=c}
+      }
+      if(!best)continue;
+      net.push({x:best.x,y:best.y,h:ANT_BEACON,range:BEACON_RANGE});u.plan.push(best.s);left--;
+      for(let k=0;k<pts.length;k++)if(!ok[k])ok[k]=seen(pts[k].x,pts[k].y,u.ant);
+    }
+    u.gapKm=ok.filter(v=>!v).length*0.05;
+  }
+}
 function step(dt){ // dt in sim seconds
   simT+=dt;
   for(const u of units){
@@ -310,6 +359,7 @@ function step(dt){ // dt in sim seconds
       if(d<=dist){u.x=tx;u.y=ty;u.seg++;dist-=d;u.odo+=d}else{u.x+=dx/d*dist;u.y+=dy/d*dist;u.odo+=dist;dist=0}
     }
     const moved=u.odo-odo0;
+    while(u.plan.length&&u.odo>=u.plan[0]-1e-6){u.plan.shift();deployBeacon(u,true)}
     const last=u.trail[u.trail.length-1];if(Math.hypot(last[0]-u.x,last[1]-u.y)>0.05)u.trail.push([u.x,u.y]);
     if(u.o2h!=null)u.o2=Math.max(0,u.o2-(dt/3600)/u.o2h*(sl>12?1.35:1));
     else u.batt=Math.max(0,u.batt-dt/3600*0.09*(dust?2:1));
@@ -360,6 +410,7 @@ function step(dt){ // dt in sim seconds
         u.queue=[];u.flags.lost=false;
       }
       u.link=lk;u.rep=snapshot(u);u.shown=u.trail.length;
+
     }else{
       if(u.link)u.link=null;
       if(!u.flags.lost&&simT-u.rep.t>60){habAlert(u,"bad",`no telemetry for 60 s · last seen ${fmtLL(u.rep.x,u.rep.y)}`);u.flags.lost=true}
@@ -367,23 +418,27 @@ function step(dt){ // dt in sim seconds
   }
 }
 
-/* ---------- Beacon coverage layer (static beacons, suit antenna height) ---------- */
+/* ---------- Radio coverage layer (fixed beacons only, suit antenna height) ---------- */
 const CW=96,CH=64,cov=document.createElement("canvas");cov.width=CW;cov.height=CH;
-let covReady=false;
-(function buildCoverage(){
-  const c=cov.getContext("2d"),img=c.createImageData(CW,CH);let j=0;
+let covGen=0;
+function addCoverage(b){
+  const gen=covGen;b.vis=new Uint8Array(CW*CH);b.visDone=false;let j=0;
   function rows(){
-    const end=Math.min(CH,j+6);
-    for(;j<end;j++)for(let i=0;i<CW;i++){
-      const x=(i+.5)*W/CW,y=(j+.5)*H/CH;let n=0;
-      for(const b of BEACONS)if(Math.hypot(b.x-x,b.y-y)<b.range&&los(x,y,ANT_SUIT,b.x,b.y,b.h))n++;
-      const p=(j*CW+i)*4;
-      if(n<3){img.data[p]=24;img.data[p+1]=14;img.data[p+2]=40;img.data[p+3]=n===2?70:130}
-    }
-    if(j<CH)setTimeout(rows,0);else{c.putImageData(img,0,0);covReady=true;draw()}
+    if(gen!==covGen)return;
+    const end=Math.min(CH,j+4);
+    for(;j<end;j++)for(let i=0;i<CW;i++){const x=(i+.5)*W/CW,y=(j+.5)*H/CH;
+      if(Math.hypot(b.x-x,b.y-y)<b.range&&los(x,y,ANT_SUIT,b.x,b.y,b.h))b.vis[j*CW+i]=1}
+    if(j<CH)setTimeout(rows,0);else{b.visDone=true;composeCoverage()}
   }
-  setTimeout(rows,50);
-})();
+  setTimeout(rows,30);
+}
+function composeCoverage(){
+  const c=cov.getContext("2d"),img=c.createImageData(CW,CH),done=BEACONS.filter(b=>b.visDone);
+  for(let k=0;k<CW*CH;k++){let n=0;for(const b of done)n+=b.vis[k];const p=k*4;
+    if(n===0){img.data[p]=24;img.data[p+1]=14;img.data[p+2]=40;img.data[p+3]=120}
+    else if(n>=3){img.data[p]=40;img.data[p+1]=200;img.data[p+2]=210;img.data[p+3]=70}}
+  c.putImageData(img,0,0);draw();
+}
 
 /* ---------- Drawing ---------- */
 const cv=$("#map"),ctx=cv.getContext("2d");
@@ -395,7 +450,7 @@ function draw(){
   ctx.imageSmoothingEnabled=true;
   ctx.drawImage(terr,0,0,cv.width,cv.height);
   if(layers.slope){ctx.globalAlpha=.85;ctx.drawImage(slo,0,0,cv.width,cv.height);ctx.globalAlpha=1}
-  if(layers.cov&&covReady)ctx.drawImage(cov,0,0,cv.width,cv.height);
+  if(layers.cov)ctx.drawImage(cov,0,0,cv.width,cv.height);
   if(dust){ctx.fillStyle="rgba(190,120,60,.28)";ctx.fillRect(0,0,cv.width,cv.height)}
   ctx.strokeStyle="rgba(255,255,255,.12)";ctx.lineWidth=1;
   for(let x=0;x<=W;x+=2){ctx.beginPath();ctx.moveTo(P(x),0);ctx.lineTo(P(x),cv.height);ctx.stroke()}
@@ -462,6 +517,7 @@ function renderUnits(){
         <span>Navigation</span><b>${nav}</b>
         <span>Uncertainty</span><b>±${Math.round(r.err)} m</b>
         <span>Link</span><b>${link}</b>
+        <span>Beacons carried</span><b>${u.beacons}${u.plan.length?` · next site in ${Math.max(0,u.plan[0]-u.odo).toFixed(1)} km`:""}</b>
         <span>Distance</span><b>${r.odo.toFixed(2)} km</b></div>
     </div>`}).join("");
 }
@@ -474,6 +530,9 @@ $("#b-reset").onclick=()=>{reset();renderUnits();draw()};
 document.querySelectorAll("[data-speed]").forEach(b=>b.onclick=()=>{speed=+b.dataset.speed;document.querySelectorAll("[data-speed]").forEach(x=>x.setAttribute("aria-pressed",x===b));draw()});
 document.querySelectorAll("[data-layer]").forEach(b=>b.onclick=()=>{const k=b.dataset.layer;layers[k]=!layers[k];b.setAttribute("aria-pressed",layers[k]);draw()});
 $("#b-dust").onclick=()=>{dust=!dust;$("#b-dust").setAttribute("aria-pressed",dust);draw()};
+$("#b-relay").onclick=()=>{relay=!relay;$("#b-relay").setAttribute("aria-pressed",relay);draw()};
+$("#b-drop").onclick=()=>{const u=units.find(v=>v.id===sel);
+  if(!deployBeacon(u,false))$("#f-cursor").textContent=`${u.name} has no beacons left`;renderUnits();draw()};
 $("#b-poi").onclick=()=>{poiMode=!poiMode;$("#b-poi").setAttribute("aria-pressed",poiMode)};
 cv.addEventListener("click",e=>{
   const r=cv.getBoundingClientRect(),x=(e.clientX-r.left)/r.width*W,y=(e.clientY-r.top)/r.height*H;
