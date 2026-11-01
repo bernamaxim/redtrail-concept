@@ -125,7 +125,7 @@ a{color:var(--track)}
     </aside>
   </section>
 
-  <p class="note">Medan di sketsa ini masih model sederhana, dan letak delta, Séítah, serta depot Three Forks hanya perkiraan. Pertanyaan untuk kalian: data NASA apa yang bisa menggantikannya, dan fitur apa yang masih kurang?</p>
+  <p class="note">Medan di sketsa ini masih model sederhana, dan letak delta, Séítah, serta depot Three Forks hanya perkiraan.</p>
 
 </div>
 
@@ -257,8 +257,8 @@ function step(dt){ // dt sim seconds
     if(u.o2h!=null)u.o2=Math.max(0,u.o2-(dt/3600)/u.o2h*(sl>12?1.35:1));
     else u.batt=Math.max(0,u.batt-dt/3600*0.09);
     // dead-reckoning drift + beacon fix every 15 min
-    u.sinceFix+=dt; u.err+=u.speed*dt/3600*1000*0.03;
-    if(u.sinceFix>=900){u.sinceFix=0;u.err=5}
+    u.sinceFix+=dt; u.err+=u.speed*dt/3600*1000*0.05;
+    if(u.sinceFix>=1800){u.sinceFix=0;u.err=5}
     // geofences
     const steep=sl>25;
     if(steep&&!u.flags.steep)alert(u,"bad",`entered slope ${sl.toFixed(0)}° (limit 25°) near ${fmtLL(u.x,u.y)}`);
@@ -310,7 +310,13 @@ function draw(){
   for(const u of units){
     if(layers.trail&&u.trail.length>1){ctx.beginPath();u.trail.forEach(([x,y],i)=>i?ctx.lineTo(P(x),P(y)):ctx.moveTo(P(x),P(y)));ctx.lineTo(P(u.x),P(u.y));
       ctx.strokeStyle=u.col;ctx.lineWidth=2.5*dpr;ctx.globalAlpha=.9;ctx.stroke();ctx.globalAlpha=1}
-    if(layers.acc&&!u.docked){ctx.beginPath();ctx.arc(P(u.x),P(u.y),Math.max(6*dpr,P(u.err/1000)),0,7);ctx.fillStyle=u.col+"33";ctx.fill();ctx.strokeStyle=u.col;ctx.lineWidth=1*dpr;ctx.stroke()}
+    if(layers.acc&&!u.docked){
+      const rr=Math.max(14*dpr,P(u.err/1000));
+      ctx.beginPath();ctx.arc(P(u.x),P(u.y),rr,0,7);
+      ctx.fillStyle=u.col+"22";ctx.fill();
+      ctx.setLineDash([4*dpr,3*dpr]);ctx.strokeStyle=u.col;ctx.lineWidth=1.5*dpr;ctx.stroke();ctx.setLineDash([]);
+      ctx.fillStyle="#fbeee2";ctx.fillText("±"+Math.round(u.err)+" m",P(u.x)+rr+3*dpr,P(u.y));
+    }
     const r=(u.id===sel?8:6)*dpr;
     ctx.beginPath();ctx.arc(P(u.x),P(u.y),r,0,7);ctx.fillStyle=u.col;ctx.fill();ctx.lineWidth=2*dpr;ctx.strokeStyle="#fff";ctx.stroke();
     ctx.fillStyle="#1b1210";ctx.font=`700 ${9*dpr}px "Oxanium",sans-serif`;ctx.textAlign="center";ctx.fillText(u.id,P(u.x),P(u.y)+0.5*dpr);ctx.textAlign="left";
